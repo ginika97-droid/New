@@ -2779,173 +2779,211 @@ Tone: clean, modern, slightly conversational.
     if (lastUpdated) localStorage.setItem('portfolio_last_updated', lastUpdated);
   }, [uploadedPortfolio, lastUpdated]);
 
-  const handleCsvUpload = async (file: File) => {
+  const handleCsvUpload = async (file: File): Promise<void> => {
     setIsRefreshing(true);
     setLastSyncError(null);
-    
-    Papa.parse(file, {
+
+    // All parsing and state hydration happens entirely in the browser.
+    // No data is sent to any server or external API at any point in this function.
+    Papa.parse<Record<string, string>>(file, {
       header: true,
       skipEmptyLines: true,
-      complete: async (results) => {
+      complete: (results) => {
         try {
           const rawData = results.data;
           if (!rawData || rawData.length === 0) {
-            throw new Error("CSV file looks empty, bestie! 🕯️");
+            throw new Error("CSV file looks empty — nothing to import.");
           }
 
-          // Robust normalization identifying headers
-          const aggregatedData: Record<string, { 
-            ticker: string, 
-            name: string, 
-            quantity: number, 
-            totalCost: number, 
-            dividends: number,
-            dividendsCash: number,
-            dividendsReinvested: number,
-            slice?: string,
-            totalValue: number
-          }> = {};
+          // ---------- header-mapping helpers ----------
+          // Returns the first row value whose column key matches any of the candidate strings
+          // (case-insensitive substring match so "Price / Share" hits "price").
+          const pick = (row: Record<string, string>, candidates: string[]): string => {
+            const key = Object.keys(row).find(k =>
+              candidates.some(c => k.toLowerCase().trim().includes(c.toLowerCase().trim()))
+            );
+            return key ? (row[key] ?? '') : '';
+          };
 
-          rawData.forEach((row: any) => {
-            // Find keys regardless of case or spaces
-            const getVal = (opts: string[]) => {
-              const matchedKey = Object.keys(row).find(k => 
-                opts.some(opt => {
-                  const key = k.toLowerCase().trim();
-                  const option = opt.toLowerCase().trim();
-                  return key === option || key.includes(option);
-                })
-              );
-              return matchedKey ? row[matchedKey] : null;
-            };
+          const num = (raw: string): number => {
+            const n = parseFloat(raw.replace(/,/g, ''));
+            return isNaN(n) ? 0 : n;
+          };
 
-            // Heuristic for T212 Actions
-            const action = (getVal(['action', 'type', 'transaction']) || '').toString().toLowerCase();
-            
-            // Priority matching for Ticker
-            let ticker = (getVal(['ticker', 'symbol', 'instrument', 'id']) || '').toString().trim().toUpperCase();
-            // If ticker is missing but we have 'asset' and it's short, it might be the ticker
-            const assetName = (getVal(['asset', 'name', 'company', 'description', 'full name', 'instrument name', 'name']) || '').toString().trim();
-            const sliceName = (getVal(['slice', 'category', 'sector', 'pie']) || '').toString().trim();
-            const planValue = parseFloat((getVal(['plan', 'total value', 'value', 'market value']) || '0').toString().replace(/,/g, ''));
-            
-            // Fix: If ticker is "N/A" or empty, try to derive it from name
-            if ((!ticker || ticker === 'N/A') && assetName) {
-                // If name is short like a ticker, use it
-                if (assetName.length <= 6 && !assetName.includes(' ')) {
-                    ticker = assetName.toUpperCase();
-                } else {
-                    // Otherwise slugify name so at least it has a unique key
-                    ticker = assetName.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
-                }
+          // ---------- aggregation ----------
+          type Bucket = {
+            ticker: string;
+            name: string;
+            quantity: number;
+            totalCost: number;
+            totalValue: number;
+            dividends: number;
+            dividendsCash: number;
+            dividendsReinvested: number;
+            slice: string;
+          };
+          const buckets: Record<string, Bucket> = {};
+
+          for (const row of rawData) {
+            const action = pick(row, ['action', 'type', 'transaction']).toLowerCase();
+
+            // Resolve ticker — fall back to slugified name for brokers that omit it
+            let ticker = pick(row, ['ticker', 'symbol', 'instrument', 'id']).trim().toUpperCase();
+            const assetName = pick(row, ['full name', 'instrument name', 'company', 'description', 'asset', 'name']).trim();
+            const sliceName = pick(row, ['slice', 'category', 'sector', 'pie']).trim();
+
+            if (!ticker || ticker === 'N/A') {
+              if (assetName) {
+                ticker = assetName.length <= 6 && !assetName.includes(' ')
+                  ? assetName.toUpperCase()
+                  : assetName.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+              }
             }
 
-            if (!ticker && action.includes('deposit')) return; // Ignore deposits
-            if (!ticker) return;
+            // Skip deposits, withdrawals, and rows without a resolvable ticker
+            if (!ticker || action.includes('deposit') || action.includes('withdraw')) continue;
 
             const name = assetName || ticker;
-            let quantity = parseFloat((getVal(['quantity', 'shares', 'amount', 'count', 'no. of shares']) || '0').toString().replace(/,/g, ''));
-            const price = parseFloat((getVal(['price', 'avg', 'cost', 'buy price', 'price / share']) || '0').toString().replace(/,/g, ''));
-            const divValue = parseFloat((getVal(['dividend', 'payout', 'income', 'yield', 'total (gbp)', 'total']) || '0').toString().replace(/,/g, ''));
+            const quantity = num(pick(row, ['quantity', 'shares', 'no. of shares', 'amount', 'count']));
+            const price    = num(pick(row, ['price / share', 'price', 'buy price', 'avg', 'cost']));
+            const divValue = num(pick(row, ['dividend', 'payout', 'income', 'yield', 'total (gbp)', 'total']));
+            const planValue = num(pick(row, ['total value', 'market value', 'plan', 'value']));
 
-            if (!aggregatedData[ticker]) {
-              aggregatedData[ticker] = { ticker, name, quantity: 0, totalCost: 0, dividends: 0, dividendsCash: 0, dividendsReinvested: 0, slice: sliceName, totalValue: 0 };
+            if (!buckets[ticker]) {
+              buckets[ticker] = { ticker, name, quantity: 0, totalCost: 0, totalValue: 0, dividends: 0, dividendsCash: 0, dividendsReinvested: 0, slice: sliceName };
             }
 
-            // Handle Trading 212 style transaction history
-            if (action.includes('buy')) {
-              aggregatedData[ticker].quantity += quantity;
-              aggregatedData[ticker].totalCost += (quantity * price);
+            const b = buckets[ticker];
+
+            if (action.includes('buy') || action === 'market buy' || action === 'limit buy') {
+              b.quantity  += quantity;
+              b.totalCost += quantity * price;
             } else if (action.includes('sell')) {
-              aggregatedData[ticker].quantity -= quantity;
-              // If we know the cost basis we could reduce it, but for simple agg we just track quantity
+              // Reduce quantity; cost-basis reduction is proportional
+              const costPerShare = b.quantity > 0 ? b.totalCost / b.quantity : 0;
+              b.quantity  = Math.max(0, b.quantity - quantity);
+              b.totalCost = Math.max(0, b.totalCost - quantity * costPerShare);
             } else if (action.includes('dividend')) {
-              aggregatedData[ticker].dividends += divValue;
-              if (action.includes('reinvest')) {
-                aggregatedData[ticker].dividendsReinvested += divValue;
-              } else {
-                aggregatedData[ticker].dividendsCash += divValue;
-              }
-            } else if (!action || action === 'market buy' || action === 'limit buy') {
-              // If no action type or structured buy, assume it's a summary row (one row per asset)
-              aggregatedData[ticker].quantity = quantity;
-              aggregatedData[ticker].totalCost = (quantity * price);
-              aggregatedData[ticker].dividends = divValue;
-              if (aggregatedData[ticker].slice === '') aggregatedData[ticker].slice = sliceName;
-              if (planValue > 0) aggregatedData[ticker].totalValue = planValue;
+              b.dividends += divValue;
+              if (action.includes('reinvest')) b.dividendsReinvested += divValue;
+              else b.dividendsCash += divValue;
+            } else {
+              // No action column — treat each row as a portfolio-snapshot row (one asset per line)
+              b.quantity   = quantity  || b.quantity;
+              b.totalCost  = quantity * price || b.totalCost;
+              b.dividends += divValue;
+              if (planValue > 0) b.totalValue = planValue;
+              if (sliceName && !b.slice) b.slice = sliceName;
             }
-          });
+          }
 
-          const normalized = Object.values(aggregatedData)
-            .filter(a => a.quantity > 0 || a.dividends > 0)
-            .map(a => {
-              const avgBuyPrice = a.quantity > 0 ? a.totalCost / a.quantity : 0;
-              const isCrypto = a.ticker.length > 5 || ['BTC', 'ETH', 'SOL', 'ALGO', 'DOT', 'ADA', 'XRP', 'DOGE', 'LINK'].includes(a.ticker);
-              
-              return {
-                ticker: a.ticker,
-                name: a.name,
-                quantity: a.quantity,
-                avgBuyPrice,
-                price: a.totalValue > 0 && a.quantity > 0 ? a.totalValue / a.quantity : avgBuyPrice, // Use CSV value to derive price if possible
-                change: 0,
-                dailyMove: 0,
+          // ---------- fallback: headerless CSV (columns: ticker, qty, avgPrice, dividends, name) ----------
+          const buildFromHeaderless = (): Stock[] =>
+            rawData.flatMap((row) => {
+              const vals = Object.values(row);
+              if (vals.length < 2) return [];
+              const ticker = vals[0]?.toString().trim().toUpperCase();
+              const quantity = parseFloat(vals[1]?.toString() ?? '0');
+              if (!ticker || isNaN(quantity) || quantity <= 0) return [];
+              const avgBuyPrice = parseFloat(vals[2]?.toString() ?? '0') || 0;
+              const dividends   = parseFloat(vals[3]?.toString() ?? '0') || 0;
+              const name        = vals[4]?.toString().trim() || ticker;
+              const totalValue  = quantity * avgBuyPrice;
+              const isCrypto    = detectCrypto(ticker);
+              return [{
+                ticker, name, quantity, avgBuyPrice,
+                price: avgBuyPrice, change: 0, dailyMove: 0,
                 vibe: 'neutral' as const,
-                narrative: '',
-                totalValue: a.totalValue || (a.quantity * avgBuyPrice),
-                investedValue: a.totalCost,
-                result: (a.totalValue || (a.quantity * avgBuyPrice)) - a.totalCost,
-                dividends: a.dividends,
-                dividendsGained: a.dividends,
-                dividendsCash: a.dividendsCash,
-                dividendsReinvested: a.dividendsReinvested,
-                slice: a.slice,
-                type: isCrypto ? 'crypto' : 'stock' as 'stock' | 'crypto'
+                narrative: buildNarrative(totalValue - totalValue, totalValue),
+                totalValue, investedValue: totalValue, result: 0,
+                dividends, dividendsGained: dividends, dividendsCash: dividends, dividendsReinvested: 0,
+                slice: '', type: isCrypto ? 'crypto' : 'stock' as 'stock' | 'crypto',
+              }];
+            });
+
+          // ---------- map buckets → Stock objects (fully local, no prices fetched) ----------
+          const KNOWN_CRYPTO = new Set(['BTC', 'ETH', 'SOL', 'ALGO', 'DOT', 'ADA', 'XRP', 'DOGE', 'LINK', 'AVAX', 'MATIC', 'LTC', 'BNB']);
+          const detectCrypto = (t: string) => t.length > 5 || KNOWN_CRYPTO.has(t);
+
+          const buildNarrative = (result: number, value: number) =>
+            result > 0
+              ? `Up ${((result / Math.max(value - result, 1)) * 100).toFixed(1)}% on cost basis.`
+              : result < 0
+              ? `Down ${(Math.abs(result / Math.max(value - result, 1)) * 100).toFixed(1)}% on cost basis.`
+              : 'Cost basis matches current value.';
+
+          let processedStocks: Stock[] = Object.values(buckets)
+            .filter(b => b.quantity > 0 || b.dividends > 0)
+            .map((b): Stock => {
+              const avgBuyPrice = b.quantity > 0 ? b.totalCost / b.quantity : 0;
+              // Use the CSV-supplied market value when available; otherwise fall back to cost basis.
+              // Either way, no external request is made.
+              const currentPrice = b.totalValue > 0 && b.quantity > 0
+                ? b.totalValue / b.quantity
+                : avgBuyPrice;
+              const totalValue   = b.totalValue > 0 ? b.totalValue : b.quantity * avgBuyPrice;
+              const investedValue = b.totalCost;
+              const result       = totalValue - investedValue;
+              const changePct    = investedValue > 0 ? (result / investedValue) * 100 : 0;
+              const isCrypto     = detectCrypto(b.ticker);
+
+              return {
+                ticker: b.ticker,
+                name: b.name,
+                price: currentPrice,
+                change: Number(changePct.toFixed(2)),
+                vibe: changePct > 5 ? 'high' : changePct < -5 ? 'low' : 'neutral',
+                dailyMove: result / 30,
+                narrative: buildNarrative(result, totalValue),
+                quantity: b.quantity,
+                avgBuyPrice,
+                totalValue,
+                investedValue,
+                result,
+                dividends: b.dividends,
+                dividendsGained: b.dividends,
+                dividendsCash: b.dividendsCash,
+                dividendsReinvested: b.dividendsReinvested,
+                slice: b.slice,
+                type: isCrypto ? 'crypto' : 'stock',
               };
             });
 
-          if (normalized.length === 0) {
-            // If the user's CSV has no headers, try indexed fallback
-            const fallback = rawData.map((row: any) => {
-              const vals = Object.values(row);
-              if (vals.length < 2) return null;
-              const ticker = (vals[0] as string || '').toString().trim();
-              const name = vals[4] ? (vals[4] as string).toString().trim() : ticker;
-              const quantity = parseFloat(vals[1] as string || '0');
-              const avgBuyPrice = vals[2] ? parseFloat(vals[2] as string) : 0;
-              const dividends = vals[3] ? parseFloat(vals[3] as string) : 0;
-              if (!ticker || isNaN(quantity)) return null;
-              return { 
-                ticker: ticker.toUpperCase(), 
-                name: name,
-                quantity, 
-                avgBuyPrice: isNaN(avgBuyPrice) ? 0 : avgBuyPrice, 
-                dividends: isNaN(dividends) ? 0 : dividends,
-                type: 'stock' 
-              };
-            }).filter(Boolean);
-
-            if (fallback.length > 0) {
-              setUploadedPortfolio(fallback);
-              await refreshPrices(fallback);
-              return;
-            }
-            throw new Error("We couldn't manifest any assets from this CSV. Check your headers, babe! xxx");
+          if (processedStocks.length === 0) {
+            processedStocks = buildFromHeaderless();
           }
 
-          setUploadedPortfolio(normalized);
-          await refreshPrices(normalized);
+          if (processedStocks.length === 0) {
+            throw new Error("No assets could be read from this CSV. Please check your column headers include Ticker and Quantity.");
+          }
+
+          // Persist parsed portfolio to localStorage and hydrate stocks state — entirely client-side.
+          setUploadedPortfolio(processedStocks);
+          setStocks(processedStocks);
+
+          const totalV = processedStocks.reduce((acc, s) => acc + s.totalValue, 0);
+          const totalP = processedStocks.reduce((acc, s) => acc + (s.result ?? 0), 0);
+          const totalD = processedStocks.reduce((acc, s) => acc + (s.dividends ?? 0), 0);
+
+          setTotalBalance(totalV);
+          setTotalProfit(totalP);
+          setLastUpdated(new Date().toISOString());
+          setLastSyncError(null);
+
+          generateAiInsights(processedStocks, totalV, totalP + totalD);
         } catch (err: any) {
           console.error("CSV Import Error:", err);
-          setLastSyncError(err.message || "Failed to parse CSV. The vibes are off. 🕯️");
+          const msg = err.message || "Failed to parse CSV.";
+          setLastSyncError(msg);
+          alert(msg);
+        } finally {
           setIsRefreshing(false);
-          alert(err.message);
         }
       },
       error: (err) => {
-        setLastSyncError(`CSV Error: ${err.message}`);
+        setLastSyncError(`CSV parse error: ${err.message}`);
         setIsRefreshing(false);
-      }
+      },
     });
   };
 
