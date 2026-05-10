@@ -1,0 +1,107 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Playfair+Display:ital,wght@0,400;0,600;1,400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", ui-serif, Georgia, serif;
+  
+  --color-brand-cream: var(--brand-cream);
+  --color-brand-sage: var(--brand-sage);
+  --color-brand-rose: var(--brand-rose);
+  --color-brand-rose-dark: var(--brand-rose-dark);
+  --color-brand-bg: var(--brand-bg);
+  --color-text-primary: var(--text-primary);
+}
+
+:root {
+  --brand-cream: #FFFFFF;
+  --brand-sage: #000000;
+  --brand-rose: #FBCEDF; /* Baby Pink */
+  --brand-rose-dark: #FF69B4; /* Hot Pink for data */
+  --brand-bg: #FFFFFF;
+  --text-primary: #000000;
+}
+
+[data-theme='dark'] {
+  --brand-bg: #000000;
+  --brand-cream: #121212;
+  --brand-sage: #FFFFFF;
+  --brand-rose: #FFB7C5;
+  --brand-rose-dark: #FF1493; /* Deep Pink */
+  --text-primary: #FFFFFF;
+}
+
+/* Color Grades */
+[data-grade='champagne'] {
+  --brand-bg: #FDFCF0;
+  --brand-cream: #F9F7F2;
+}
+
+[data-theme='dark'][data-grade='champagne'] {
+  --brand-bg: #000000;
+  --text-primary: #EDEBD7;
+}
+
+[data-grade='espresso'] {
+  --brand-bg: #F5F1EE;
+  --brand-sage: #3C2A21;
+}
+
+[data-theme='dark'][data-grade='espresso'] {
+  --brand-bg: #000000;
+  --text-primary: #F5F1EE;
+}
+
+[data-grade='lavender'] {
+  --brand-bg: #F8F7FF;
+  --brand-rose: #BDB2FF;
+}
+
+[data-theme='dark'][data-grade='lavender'] {
+  --brand-bg: #000000;
+  --text-primary: #F0EDFF;
+}
+
+[data-grade='silver'] {
+  --brand-bg: #F5F5F5;
+  --brand-cream: #E5E5E5;
+  --brand-sage: #000000;
+  --brand-rose: #A8A9AD;
+}
+
+[data-theme='dark'][data-grade='silver'] {
+  --brand-bg: #000000;
+  --text-primary: #E5E5E5;
+}
+
+@layer base {
+  body {
+    @apply bg-brand-bg text-text-primary font-sans antialiased transition-all duration-500 selection:bg-brand-rose selection:text-white;
+  }
+  
+  h1, h2, h3, h4 {
+    @apply font-serif text-text-primary;
+  }
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-brand-bg/80 backdrop-blur-md border border-brand-sage/10 shadow-sm transition-all duration-300;
+  }
+  
+  .text-pink {
+    color: var(--brand-rose);
+  }
+
+  .bg-pink {
+    background-color: var(--brand-rose);
+  }
+
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "The It Girl Trading Terminal",
+  "description": "A minimalist, luxury mobile trading dashboard for the modern 'It Girl' aesthetic.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": []
+}
